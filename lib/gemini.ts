@@ -1,12 +1,11 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-export function getGeminiModel() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not set');
+// モデル名を指定しない場合は、自動的に "gemini-2.5-flash" が使われます
+export const getGeminiModel = (modelName: string = "gemini-2.5-flash") => {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not set in environment variables");
   }
   
-  const genAI = new GoogleGenerativeAI(apiKey);
-  // Gemini 2.5 Flash (実際のAPIでは最新のフラッシュモデルを使用)
-  return genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-}
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  return genAI.getGenerativeModel({ model: modelName });
+};
