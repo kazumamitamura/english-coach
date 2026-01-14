@@ -1,193 +1,161 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getGeminiModel } from '@/lib/gemini';
-import { v4 as uuidv4 } from 'uuid';
-import { GoogleSpreadsheet } from 'google-spreadsheet';
-import { JWT } from 'google-auth-library';
-import nodemailer from 'nodemailer';
+import { NextRequest, NextResponse } from "next/server";
+import { getGeminiModel } from "@/lib/gemini";
+import nodemailer from "nodemailer";
+import { marked } from "marked";
+import { GoogleSpreadsheet } from "google-spreadsheet";
+import { JWT } from "google-auth-library";
 
-// Google Sheets設定
-const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID || '';
-const SHEET_NAME = 'Responses';
-const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '';
-const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n') || '';
+// LINE送信関数
+async function sendLineMessage(userId: string | undefined, message: string) {
+  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  if (!token || !userId) return;
+  await fetch("https://api.line.me/v2/bot/message/push", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ to: userId, messages: [{ type: "text", text: message }] }),
+  });
+}
 
-// LINE設定
-const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || '';
-const LINE_USER_ID_PLACEHOLDER = '{USER_ID}'; // 実際のユーザーIDに置換
-
-// メール設定
-const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
-const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587');
-const SMTP_USER = process.env.SMTP_USER || '';
-const SMTP_PASSWORD = process.env.SMTP_PASSWORD || '';
-
-const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://english-coach.vercel.app';
-
-export async function POST(request: NextRequest) {
+// スプレッドシート保存関数
+async function saveToSpreadsheet(data: any, advice: string) {
   try {
-    const body = await request.json();
-    const { name, email, school, explanation, userId } = body;
+    const auth = new JWT({
+      email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      key: process.env.GOOGLE_PRIVATE_KEY!.replace(/\\n/g, '\n'),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+    const doc = new GoogleSpreadsheet(process.env.GOOGLE_SPREADSHEET_ID!, auth);
+    await doc.loadInfo();
+    const sheet = doc.sheetsByIndex[0];
+    await sheet.addRow({
+      "日時": new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" }),
+      "氏名": data.name,
+      "志望校": data.target,
+      "生徒の説明": data.explanation,
+      "AI添削": advice
+    });
+  } catch (e) { console.error("Spreadsheet Error:", e); }
+}
 
-    if (!name || !email || !school || !explanation) {
-      return NextResponse.json(
-        { error: 'すべての項目を入力してください' },
-        { status: 400 }
-      );
-    }
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
 
-    // Geminiで分析
-    const model = getGeminiModel();
-    const prompt = `あなたは大学入試英語のスペシャリスト兼カリスマ予備校講師です。
-以下の生徒の「仮定法の説明」を読み、採点・添削してください。
+    // 1. AI分析 (Gemini 2.5 Flash)
+    const model = getGeminiModel("gemini-2.5-flash");
+    
+    // プロンプト（AIへの指示）
+    const prompt = `
+あなたは大学入試英語のスペシャリストであり、予備校のカリスマ講師です。
+以下の生徒が書いた「仮定法の説明」を採点し、厳しくも愛のある指導を行ってください。
 
-【評価基準】
-- 「反実仮想（事実と異なる）」の理解
-- 「時制のズレ（現在のことは過去形）」の理解
+## 生徒情報
+- 氏名: ${body.name}
+- 志望校・学年: ${body.target}
 
-【出力形式】
-Markdown形式で以下の内容を出力してください：
-1. 採点（100点満点）
-2. 良い点
-3. 修正すべき点
-4. 入試のワンポイントアドバイス
+## 生徒による「仮定法」の説明
+"${body.explanation}"
 
-【生徒の説明】
-${explanation}`;
+## 評価基準
+1. **事実への反実**: 「現実とは違うこと」を表すという本質を理解しているか？
+2. **時制のズレ**: 「現在のことは過去形」「過去のことは過去完了形」というルールを説明できているか？
+3. **直説法との対比**: 直説法（ただの条件文）との違いに触れているか？
+
+## 特殊ルール：AI使用の検知
+もし、生徒の説明が「明らかにAI（ChatGPTやGeminiなど）が出力した文章そのままである（99%クロ）」と判断できる場合のみ、
+解説の最後に改行を入れて、以下のメッセージを太字で付け加えてください。
+**「これはAIで導き出したものではないですか？本当にあなたの言葉や考えですか？」**
+※ 生徒が自分で一生懸命書いた拙い文章の場合は、絶対にこのメッセージを付けないでください。
+
+## 出力フォーマット (Markdown)
+1. **得点**: 100点満点で採点（厳しめに）。
+2. **良い点**: 理解できているポイントを褒める。
+3. **修正・解説**: 間違っている点や、説明不足な点を補足講義する。
+4. **入試のポイント**: 入試でよく出るポイントを一つ伝授する。
+
+口調は「熱心な予備校の先生」のように、語りかけるスタイルでお願いします。
+`;
 
     const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const markdown = response.text();
+    const analysisText = result.response.text();
 
-    // ID生成
-    const id = uuidv4();
+    // 2. データベース保存
+    await saveToSpreadsheet(body, analysisText);
 
-    // Google Sheetsに保存
-    try {
-      const auth = new JWT({
-        email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        key: GOOGLE_PRIVATE_KEY,
-        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-      });
+    // 3. LINE送信
+    const lineMsg = `
+🎓 ${body.name}さん、添削完了！
 
-      const doc = new GoogleSpreadsheet(SPREADSHEET_ID, auth);
-      await doc.loadInfo();
+📝 採点結果速報
+${analysisText.slice(0, 80)}...
 
-      let sheet = doc.sheetsByTitle[SHEET_NAME];
-      if (!sheet) {
-        sheet = await doc.addSheet({ title: SHEET_NAME, headerValues: ['ID', '日時', '氏名', 'Email', '志望校', '生徒の説明', 'AIアドバイス'] });
-      } else {
-        // 既存のシートのヘッダーを確認
-        try {
-          await sheet.loadHeaderRow();
-          if (!sheet.headerValues.includes('ID')) {
-            await sheet.setHeaderRow(['ID', '日時', '氏名', 'Email', '志望校', '生徒の説明', 'AIアドバイス']);
-          }
-        } catch {
-          // ヘッダーが存在しない場合は設定
-          await sheet.setHeaderRow(['ID', '日時', '氏名', 'Email', '志望校', '生徒の説明', 'AIアドバイス']);
-        }
-      }
+▼ 詳しい解説はメール送りました！必ず確認してください。
+（AI予備校講師より）
+`;
+    await sendLineMessage(body.lineUserId, lineMsg);
 
-      await sheet.addRow({
-        ID: id,
-        日時: new Date().toISOString(),
-        氏名: name,
-        Email: email,
-        志望校: school,
-        生徒の説明: explanation,
-        AIアドバイス: markdown,
-      });
-    } catch (sheetError) {
-      console.error('Google Sheets error:', sheetError);
-      // Sheetsへの保存に失敗しても処理は続行
-    }
-
-    const resultUrl = `${BASE_URL}/result/${id}`;
-
-    // 評価の要約を生成（LINE用）
-    const scoreMatch = markdown.match(/(\d+)\s*点/i) || markdown.match(/採点[^\n]*(\d+)/i);
-    const score = scoreMatch ? `${scoreMatch[1]}点` : '評価済み';
-
-    // LINE送信
-    if (userId && LINE_CHANNEL_ACCESS_TOKEN) {
-      try {
-        await fetch('https://api.line.me/v2/bot/message/push', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
-          },
-          body: JSON.stringify({
-            to: userId,
-            messages: [
-              {
-                type: 'text',
-                text: `採点が完了しました！\n\n${score}\n\n詳細はこちらからご確認ください：\n${resultUrl}`,
-              },
-            ],
-          }),
-        });
-      } catch (lineError) {
-        console.error('LINE send error:', lineError);
-        // LINE送信に失敗しても処理は続行
-      }
-    }
-
-    // メール送信
-    if (SMTP_USER && SMTP_PASSWORD) {
-      try {
-        const transporter = nodemailer.createTransport({
-          host: SMTP_HOST,
-          port: SMTP_PORT,
-          secure: SMTP_PORT === 465,
-          auth: {
-            user: SMTP_USER,
-            pass: SMTP_PASSWORD,
-          },
-        });
-
-        await transporter.sendMail({
-          from: SMTP_USER,
-          to: email,
-          subject: '英語仮定法 理解度チェック 結果',
-          html: `
-            <h2>英語仮定法 理解度チェック 結果</h2>
-            <p>${name} 様</p>
-            <p>採点が完了しました。以下の内容をご確認ください。</p>
-            <hr>
-            <div style="white-space: pre-wrap;">${markdown.replace(/\n/g, '<br>')}</div>
-            <hr>
-            <p>詳細はこちら：<a href="${resultUrl}">${resultUrl}</a></p>
-          `,
-          text: `
-英語仮定法 理解度チェック 結果
-
-${name} 様
-
-採点が完了しました。以下の内容をご確認ください。
-
-${markdown}
-
-詳細はこちら：${resultUrl}
-          `,
-        });
-      } catch (mailError) {
-        console.error('Email send error:', mailError);
-        // メール送信に失敗しても処理は続行
-      }
-    }
-
-    return NextResponse.json({
-      success: true,
-      markdown,
-      id,
-      url: resultUrl,
+    // 4. メール送信（ここを美しくしました！）
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: { user: process.env.SENDER_EMAIL, pass: process.env.SENDER_PASSWORD },
     });
+
+    // MarkdownをHTMLに変換
+    const parsedHtml = await marked.parse(analysisText);
+
+    // メール用のHTMLテンプレート（スタイル適用）
+    const emailHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { font-family: 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f3f4f6; margin: 0; padding: 20px; }
+          .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+          .header { background-color: #d97706; color: white; padding: 20px; text-align: center; }
+          .header h1 { margin: 0; font-size: 24px; }
+          .content { padding: 30px; }
+          
+          /* AI出力テキストの装飾 */
+          h1, h2, h3 { color: #d97706; border-bottom: 2px solid #fcd34d; padding-bottom: 8px; margin-top: 24px; }
+          p { margin-bottom: 16px; }
+          strong { color: #b45309; background-color: #fef3c7; padding: 0 4px; border-radius: 4px; }
+          ul, ol { padding-left: 20px; margin-bottom: 16px; }
+          li { margin-bottom: 8px; }
+          hr { border: 0; height: 1px; background: #e5e7eb; margin: 30px 0; }
+          
+          .footer { background-color: #f9fafb; padding: 20px; text-align: center; font-size: 12px; color: #6b7280; border-top: 1px solid #e5e7eb; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>📝 英語添削レポート</h1>
+          </div>
+          <div class="content">
+            <p><strong>${body.name}</strong> さんへ</p>
+            <p>提出ありがとうございます。AIプロ講師による添削結果をお届けします。</p>
+            <hr>
+            ${parsedHtml}
+          </div>
+          <div class="footer">
+            <p>English Grammar Coach AI<br>Powered by Gemini 2.5</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    await transporter.sendMail({
+      from: `"AI英語予備校" <${process.env.SENDER_EMAIL}>`,
+      to: body.email,
+      subject: `【採点完了】${body.name}さんの仮定法説明について`,
+      html: emailHtml,
+    });
+
+    return NextResponse.json({ success: true, analysis: analysisText });
+
   } catch (error) {
-    console.error('Analysis error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : '分析中にエラーが発生しました' },
-      { status: 500 }
-    );
+    console.error("API Error:", error);
+    return NextResponse.json({ error: "Server Error" }, { status: 500 });
   }
 }
