@@ -98,6 +98,14 @@ export default function Home() {
           <h1 className="text-3xl font-bold text-amber-700 mb-2">
             英語仮定法 理解度チェック
           </h1>
+
+          {/* ▼▼▼ 追加するコード ▼▼▼ */}
+          <p className="text-xs text-gray-400 font-mono mb-2">
+             DEBUG: UserID = {userId ? userId : "取得できていません"}
+          </p>
+          {/* ▲▲▲ 追加ここまで ▲▲▲ */}
+
+
           <p className="text-slate-600">
             AI講師があなたの説明を採点・添削します
           </p>
