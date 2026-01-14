@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai"; // 直接Geminiを呼び出す
+import { GoogleGenerativeAI } from "@google/generative-ai"; 
 import nodemailer from "nodemailer";
 import { marked } from "marked";
 import { GoogleSpreadsheet } from "google-spreadsheet";
@@ -12,7 +12,6 @@ import { JWT } from "google-auth-library";
 // LINE送信関数
 async function sendLineMessage(userId: string | undefined, message: string) {
   const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
-  // LINE IDがない場合はスキップ
   if (!token || !userId) {
     console.log("LINE送信スキップ: TokenまたはUserID不足");
     return;
@@ -34,7 +33,7 @@ async function saveToSpreadsheet(data: any, advice: string) {
   try {
     const serviceEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
     const privateKey = process.env.GOOGLE_PRIVATE_KEY;
-    const sheetId = process.env.GOOGLE_SPREADSHEET_ID; // 変数名を合わせました
+    const sheetId = process.env.GOOGLE_SPREADSHEET_ID;
 
     if (!serviceEmail || !privateKey || !sheetId) {
       console.warn("Spreadsheet保存スキップ: 環境変数が不足しています");
@@ -51,16 +50,18 @@ async function saveToSpreadsheet(data: any, advice: string) {
     await doc.loadInfo();
     const sheet = doc.sheetsByIndex[0];
     
+    // ▼ 修正箇所: 学年と志望校をそれぞれの列に保存
+    // ※スプレッドシートの1行目のヘッダー名と完全に一致させる必要があります
     await sheet.addRow({
       "日時": new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" }),
-      "氏名": data.name || "名無し", // 名前がない場合のフォールバック
-      "学年・志望校": data.target || data.grade, // フロントエンドの変数名揺れに対応
-      "生徒の説明": data.explanation || data.message,
+      "氏名": data.name || "名無し",
+      "学年": data.grade || "未設定",           // B列に対応
+      "志望校": data.targetSchool || "未設定",   // C列に対応
+      "生徒の説明": data.explanation || "",
       "AI添削": advice
     });
   } catch (e) { 
     console.error("Spreadsheet Error:", e); 
-    // エラーが出ても処理を止めない
   }
 }
 
@@ -72,11 +73,12 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     
-    // フロントエンドからのデータ受け取り（変数名の揺れを吸収）
+    // ▼ 修正箇所: フロントエンドから送られてくるデータを個別に取得
     const name = body.name || "生徒";
-    const target = body.target || body.targetSchool || "未設定";
+    const grade = body.grade || "未設定";        // 学年
+    const targetSchool = body.targetSchool || "未設定"; // 志望校
     const explanation = body.explanation || body.message || "";
-    const lineUserId = body.lineUserId;
+    const lineUserId = body.userId; // フロントエンドの送信データに合わせて修正 (body.userId)
     const userEmail = body.email;
 
     // --- A. AI分析 (Gemini) ---
@@ -84,16 +86,17 @@ export async function POST(req: Request) {
     if (!apiKey) throw new Error("GEMINI_API_KEY is not defined");
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // 2.5が使えない場合は1.5-flash推奨
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // 最新モデル推奨 (なければ1.5-flash)
     
-    // プロンプト（AIへの指示：先生のこだわり部分）
+    // プロンプト修正: 学年と志望校を分けてAIに伝える
     const prompt = `
     あなたは大学入試英語のスペシャリストであり、予備校のカリスマ講師です。
     以下の生徒が書いた「仮定法の説明」を採点し、厳しくも愛のある指導を行ってください。
 
     ## 生徒情報
     - 氏名: ${name}
-    - 志望校・学年: ${target}
+    - 学年: ${grade}
+    - 志望校: ${targetSchool}
 
     ## 生徒による「仮定法」の説明
     "${explanation}"
@@ -104,16 +107,15 @@ export async function POST(req: Request) {
     3. **直説法との対比**: 直説法（ただの条件文）との違いに触れているか？
 
     ## 特殊ルール：AI使用の検知
-    もし、生徒の説明が「明らかにAI（ChatGPTやGeminiなど）が出力した文章そのままである（99%クロ）」と判断できる場合のみ、
+    もし、生徒の説明が「明らかにAIが出力した文章そのままである（99%クロ）」と判断できる場合のみ、
     解説の最後に改行を入れて、以下のメッセージを太字で付け加えてください。
     **「これはAIで導き出したものではないですか？本当にあなたの言葉や考えですか？」**
-    ※ 生徒が自分で一生懸命書いた拙い文章の場合は、絶対にこのメッセージを付けないでください。
 
     ## 出力フォーマット (Markdown)
     1. **得点**: 100点満点で採点（厳しめに）。
     2. **良い点**: 理解できているポイントを褒める。
     3. **修正・解説**: 間違っている点や、説明不足な点を補足講義する。
-    4. **入試のポイント**: 入試でよく出るポイントを一つ伝授する。
+    4. **入試のポイント**: ${targetSchool}を目指す${grade}に向けて、入試でよく出るポイントを一つ伝授する。
 
     口調は「熱心な予備校の先生」のように、語りかけるスタイルでお願いします。
     `;
@@ -122,8 +124,8 @@ export async function POST(req: Request) {
     const analysisText = result.response.text();
 
     // --- B. データベース保存 ---
-    // データを整形して保存関数へ
-    const saveObj = { name, target, explanation };
+    // 保存用オブジェクトを作成
+    const saveObj = { name, grade, targetSchool, explanation };
     await saveToSpreadsheet(saveObj, analysisText);
 
     // --- C. LINE送信 ---
@@ -141,22 +143,19 @@ ${analysisText.slice(0, 80)}...
     }
 
     // --- D. メール送信 (HTML) ---
-    // ここで sender設定
-    const smtpUser = process.env.SMTP_USER || process.env.SENDER_EMAIL;
-    const smtpPass = process.env.SMTP_PASSWORD || process.env.SENDER_PASSWORD;
+    const smtpUser = process.env.SENDER_EMAIL;     // 環境変数を統一しました
+    const smtpPass = process.env.SENDER_PASSWORD;
 
     if (smtpUser && smtpPass && userEmail) {
         const transporter = nodemailer.createTransport({
-          host: process.env.SMTP_HOST || "smtp.gmail.com",
+          host: "smtp.gmail.com",
           port: 587,
           secure: false,
           auth: { user: smtpUser, pass: smtpPass },
         });
 
-        // MarkdownをHTMLに変換
         const parsedHtml = await marked.parse(analysisText);
 
-        // メール用のHTMLテンプレート
         const emailHtml = `
           <!DOCTYPE html>
           <html>
@@ -180,7 +179,7 @@ ${analysisText.slice(0, 80)}...
               </div>
               <div class="content">
                 <p><strong>${name}</strong> さんへ</p>
-                <p>提出ありがとうございます。AIプロ講師による添削結果をお届けします。</p>
+                <p>志望校: ${targetSchool} / 学年: ${grade}</p>
                 <hr>
                 ${parsedHtml}
               </div>
@@ -200,7 +199,7 @@ ${analysisText.slice(0, 80)}...
         });
     }
 
-    return NextResponse.json({ success: true, analysis: analysisText });
+    return NextResponse.json({ success: true, markdown: analysisText });
 
   } catch (error: any) {
     console.error("API Error:", error);

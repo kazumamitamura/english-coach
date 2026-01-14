@@ -18,10 +18,13 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
+  
+  // 修正箇所1: school を削除し、grade (学年) と targetSchool (志望校) を追加
   const [formData, setFormData] = useState({
     name: '',
     email: '',
-    school: '',
+    grade: '',        // 学年
+    targetSchool: '', // 志望校
     explanation: '',
   });
 
@@ -129,19 +132,37 @@ export default function Home() {
             />
           </div>
 
-          <div>
-            <label htmlFor="school" className="block text-sm font-medium text-slate-700 mb-2">
-              志望校・学年 <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="text"
-              id="school"
-              required
-              placeholder="例: 高校2年生 難関国立志望"
-              value={formData.school}
-              onChange={(e) => setFormData({ ...formData, school: e.target.value })}
-              className="w-full px-4 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
-            />
+          {/* 修正箇所2: 学年と志望校の入力欄を分離 */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="grade" className="block text-sm font-medium text-slate-700 mb-2">
+                学年 <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                id="grade"
+                required
+                placeholder="例: 高校2年生"
+                value={formData.grade}
+                onChange={(e) => setFormData({ ...formData, grade: e.target.value })}
+                className="w-full px-4 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="targetSchool" className="block text-sm font-medium text-slate-700 mb-2">
+                志望校 <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                id="targetSchool"
+                required
+                placeholder="例: ○○大学"
+                value={formData.targetSchool}
+                onChange={(e) => setFormData({ ...formData, targetSchool: e.target.value })}
+                className="w-full px-4 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+              />
+            </div>
           </div>
 
           <div>
