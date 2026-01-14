@@ -9,6 +9,7 @@ declare global {
       init: (config: { liffId: string }) => Promise<void>;
       getProfile: () => Promise<{ userId: string; displayName: string; pictureUrl?: string }>;
       isLoggedIn: () => boolean;
+      login: () => void;
     };
   }
 }
@@ -19,12 +20,11 @@ export default function Home() {
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
   
-  // 修正箇所1: school を削除し、grade (学年) と targetSchool (志望校) を追加
   const [formData, setFormData] = useState({
     name: '',
     email: '',
-    grade: '',        // 学年
-    targetSchool: '', // 志望校
+    grade: '',
+    targetSchool: '',
     explanation: '',
   });
 
@@ -33,7 +33,6 @@ export default function Home() {
     const initLiff = async () => {
       const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
       if (!liffId || !window.liff) {
-        console.warn('LIFF is not available');
         return;
       }
 
@@ -98,14 +97,6 @@ export default function Home() {
           <h1 className="text-3xl font-bold text-amber-700 mb-2">
             英語仮定法 理解度チェック
           </h1>
-
-          {/* ▼▼▼ 追加するコード ▼▼▼ */}
-          <p className="text-xs text-gray-400 font-mono mb-2">
-             DEBUG: UserID = {userId ? userId : "取得できていません"}
-          </p>
-          {/* ▲▲▲ 追加ここまで ▲▲▲ */}
-
-
           <p className="text-slate-600">
             AI講師があなたの説明を採点・添削します
           </p>
@@ -140,7 +131,6 @@ export default function Home() {
             />
           </div>
 
-          {/* 修正箇所2: 学年と志望校の入力欄を分離 */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label htmlFor="grade" className="block text-sm font-medium text-slate-700 mb-2">
