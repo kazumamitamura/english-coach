@@ -29,7 +29,7 @@ async function sendLineMessage(userId: string | undefined, message: string) {
 }
 
 // スプレッドシート保存関数
-async function saveToSpreadsheet(data: any, advice: string) {
+async function saveToSpreadsheet(data: any, advice: string, userId: string) {
   try {
     const serviceEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
     const privateKey = process.env.GOOGLE_PRIVATE_KEY;
@@ -50,15 +50,15 @@ async function saveToSpreadsheet(data: any, advice: string) {
     await doc.loadInfo();
     const sheet = doc.sheetsByIndex[0];
     
-    // ▼ 修正箇所: 学年と志望校をそれぞれの列に保存
-    // ※スプレッドシートの1行目のヘッダー名と完全に一致させる必要があります
+    // ▼ 修正箇所: ユーザーIDも一緒に保存する
     await sheet.addRow({
       "日時": new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" }),
       "氏名": data.name || "名無し",
-      "学年": data.grade || "未設定",           // B列に対応
-      "志望校": data.targetSchool || "未設定",   // C列に対応
+      "学年": data.grade || "未設定",
+      "志望校": data.targetSchool || "未設定",
       "生徒の説明": data.explanation || "",
-      "AI添削": advice
+      "AI添削": advice,
+      "ユーザーID": userId // G列に追加
     });
   } catch (e) { 
     console.error("Spreadsheet Error:", e); 
@@ -73,12 +73,11 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     
-    // ▼ 修正箇所: フロントエンドから送られてくるデータを個別に取得
     const name = body.name || "生徒";
-    const grade = body.grade || "未設定";        // 学年
-    const targetSchool = body.targetSchool || "未設定"; // 志望校
+    const grade = body.grade || "未設定";
+    const targetSchool = body.targetSchool || "未設定";
     const explanation = body.explanation || body.message || "";
-    const lineUserId = body.userId; // フロントエンドの送信データに合わせて修正 (body.userId)
+    const lineUserId = body.userId; 
     const userEmail = body.email;
 
     // --- A. AI分析 (Gemini) ---
@@ -86,9 +85,8 @@ export async function POST(req: Request) {
     if (!apiKey) throw new Error("GEMINI_API_KEY is not defined");
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // 最新モデル推奨 (なければ1.5-flash)
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
     
-    // プロンプト修正: 学年と志望校を分けてAIに伝える
     const prompt = `
     あなたは大学入試英語のスペシャリストであり、予備校のカリスマ講師です。
     以下の生徒が書いた「仮定法の説明」を採点し、厳しくも愛のある指導を行ってください。
@@ -124,26 +122,32 @@ export async function POST(req: Request) {
     const analysisText = result.response.text();
 
     // --- B. データベース保存 ---
-    // 保存用オブジェクトを作成
     const saveObj = { name, grade, targetSchool, explanation };
-    await saveToSpreadsheet(saveObj, analysisText);
+    // ▼ 修正: lineUserId も渡す
+    await saveToSpreadsheet(saveObj, analysisText, lineUserId || "unknown");
 
     // --- C. LINE送信 ---
     if (lineUserId) {
+        // ▼ 修正: 振り返り用のリンクを追加
+        // NEXT_PUBLIC_LIFF_IDを使ってURLを生成します
+        const liffUrl = `https://liff.line.me/${process.env.NEXT_PUBLIC_LIFF_ID}/history`;
+        
         const lineMsg = `
 🎓 ${name}さん、添削完了！
 
 📝 採点結果速報
 ${analysisText.slice(0, 80)}...
 
-▼ 詳しい解説はメール送りました！必ず確認してください。
-（AI予備校講師より）
+▼ 詳しい解説はメールを確認してください。
+
+📊 過去の添削履歴を振り返る
+${liffUrl}
 `;
         await sendLineMessage(lineUserId, lineMsg);
     }
 
     // --- D. メール送信 (HTML) ---
-    const smtpUser = process.env.SENDER_EMAIL;     // 環境変数を統一しました
+    const smtpUser = process.env.SENDER_EMAIL;
     const smtpPass = process.env.SENDER_PASSWORD;
 
     if (smtpUser && smtpPass && userEmail) {
